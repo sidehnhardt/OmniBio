@@ -1,5 +1,5 @@
 #List of required packages
-required_packages <- c("shiny", "readxl", "xlsx", "dplyr", "tidyr", "ggplot2", "gcplyr", "bslib", "shinyjs", "viridis")
+required_packages <- c("shiny", "readxl", "xlsx", "dplyr", "tidyr", "ggplot2", "gcplyr", "bslib", "shinyjs", "viridis", "gplots")
 
 #Function to install packages if they are not available
 install_if_missing <- function(packages) {
@@ -23,6 +23,7 @@ library(gcplyr)
 library(bslib)
 library(shinyjs)
 library(viridis)
+library(gplots)
 
 #User Interfase
 ui <- fluidPage(
@@ -44,7 +45,6 @@ ui <- fluidPage(
       fileInput("excel_file", "Upload your Optical Density measurements: (Excel file)", accept = c(".xlsx", ".xls")),
       uiOutput("sheet_selector"),
       textInput("new_sheet_name", "Enter new sheet name", value = ""),
-      numericInput("time_measurement", "Please enter the time between measurements of your experiment: (fraction of hours)", value = ""),
       conditionalPanel(
         condition = "input.input_program == 'method_icont'",
         numericInput("label", "*Enter the number of the Label where the Optical Density data is located:", value = "")
@@ -57,6 +57,10 @@ ui <- fluidPage(
       downloadButton("download_lag_plots", "Download your lag phase plots", class = "btn-sm"),
       downloadButton("download_max_percap_plot", "Download your µmax plots", class = "btn-sm"),
       downloadButton("download_performance_plot", "Download your Performance plots", class = "btn-sm"),
+      downloadButton("download_lag_heatmap", "Download Lag Time Heatmap", class = "btn-sm"),
+      downloadButton("download_auc_heatmap", "Download AUC Heatmap", class = "btn-sm"),
+      downloadButton("download_odmax_heatmap", "Download ODmax Heatmap", class = "btn-sm"),
+      downloadButton("download_max_percap_heatmap", "Download µmax Heatmap", class = "btn-sm")
     ),
     
     mainPanel(
@@ -167,27 +171,35 @@ server <- function(input, output, session) {
   raw_data <- reactive({
     req(input$excel_file, input$selected_sheet)
     if (input$input_program == "method_gen") {
-      data <- read_excel(input$excel_file$datapath, col_names = F, sheet = input$selected_sheet)
+      data <- read_excel(input$excel_file$datapath, col_names = F, sheet = input$selected_sheet) 
       time_pos <- which(data == "Time", arr.ind = T)
       col_names <- as.list(data[time_pos[2,1],2:ncol(data)])
       data <- data[(time_pos[2,1] + 1):nrow(data),
                    (time_pos[2,2]:ncol(data))]
       colnames(data) <- col_names
-      data$Time <- seq(0, nrow(data)-1, by = input$time_measurement)
+      data$Time_POSIXct <- as.POSIXct(as.numeric(data$Time) * (60*60*24), origin = "1899-12-30", tz = "UTC")
       data <- data[,-2]
       data <- na.omit(data)
+      data <- data %>% mutate(
+        Timediff = as.numeric(Time_POSIXct - lag(Time_POSIXct), units = "hours"),
+        Time = cumsum(replace_na(Timediff, 0)
+        ))
+      data <- data[,1:(ncol(data)-2)]
+      
       return(data)
+      
     } else if (input$input_program == "method_icont") {
       tecan_out <- read_excel(input$excel_file$datapath, col_names = FALSE, sheet = input$selected_sheet)
-      #Find "Label" position
       label_pos <- grep("^Label", tecan_out$...1)
+      time_pos_t <- which(tecan_out == "Time [s]", arr.ind = T)
+      time_tec <- tecan_out[time_pos_t[input$label,1],]
+      ttime <- t(time_tec)
       
-      #Handle less than 2 or more Label cases
-      start_pos <- label_pos[1]
+      start_pos <- label_pos[input$label]
       end_pos <- if (length(label_pos) > 1) {
-        label_pos[2] - 2  
+        label_pos[2] - 2 
       } else {
-        nrow(tecan_out)  
+        nrow(tecan_out)
       }
       label_x <- tecan_out[start_pos:end_pos,]
       
@@ -197,11 +209,10 @@ server <- function(input, output, session) {
       label_x <- label_x[-1,]
       label_x <- na.omit(label_x)
       
-      #Create a Time column
-      label_x <- cbind(Time = seq(0, nrow(label_x) - 1, by = 1), label_x)
+      label_x <- cbind(Time = ttime[-1,], label_x)
       
       row.names(label_x) <- seq(1, nrow(label_x))
-
+      
       return(label_x)
     }
     
@@ -540,12 +551,21 @@ server <- function(input, output, session) {
     renderPlot({
       req(data)
 
-      heatmap(data(),
+      heatmap.2(data(),
               main = paste("Heatmap of Average", parameter_name, "by Species"),
               xlab = "Processed Sheets",
               ylab = input$metadata_block_names,
               col = viridis::viridis(256),
-              margins = c(10, 10)
+              margins = c(10, 10),
+              trace = "none",
+              key = T,
+              keysize = 1.0,
+              key.title = "Z-score",
+              dendogram = "both",
+              lhei = c(1,4), 
+              lwid = c(1,4),
+              cexRow = 1.3,
+              cexCol = 1.3
       )
     })
   }
@@ -691,6 +711,119 @@ server <- function(input, output, session) {
       ggsave(file, plot = ODmax_plot(), device = "pdf", width = 15, height = 10)
     }
   )
+  
+  output$download_lag_heatmap <- downloadHandler(
+    filename = function() {
+      paste("Lag_Time_Heatmap_", input$metadata_block_names, "_", Sys.Date(), ".png", sep = "")
+    },
+    content = function(file) {
+      req(averaged_parameters_by_species()$lag)
+      data <- scale(averaged_parameters_by_species()$lag)
+      png(file, width = 800, height = 600)
+      heatmap.2(data,
+                main = paste("Heatmap of Average lag time by Species"),
+                xlab = "Processed Sheets",
+                ylab = input$metadata_block_names,
+                col = viridis::viridis(256),
+                margins = c(10, 10),
+                trace = "none",
+                key = T,
+                keysize = 1.0,
+                key.title = "Z-score",
+                dendogram = "both",
+                lhei = c(1,4), 
+                lwid = c(1,4),
+                cexRow = 1.3,
+                cexCol = 1.3
+      )
+      dev.off()
+    }
+  )
+  
+  output$download_auc_heatmap <- downloadHandler(
+    filename = function() {
+      paste("AUC_Heatmap_", input$metadata_block_names, "_", Sys.Date(), ".png", sep = "")
+    },
+    content = function(file) {
+      req(averaged_parameters_by_species()$AUC)
+      data <- scale(averaged_parameters_by_species()$AUC)
+      png(file, width = 800, height = 600)
+      heatmap.2(data,
+                main = paste("Heatmap of Average AUC by Species"),
+                xlab = "Processed Sheets",
+                ylab = input$metadata_block_names,
+                col = viridis::viridis(256),
+                margins = c(10, 10),
+                trace = "none",
+                key = T,
+                keysize = 1.0,
+                key.title = "Z-score",
+                dendogram = "both",
+                lhei = c(1,4), 
+                lwid = c(1,4),
+                cexRow = 1.3,
+                cexCol = 1.3
+      )
+      dev.off()
+    }
+  )
+  
+  output$download_odmax_heatmap <- downloadHandler(
+    filename = function() {
+      paste("ODmax_Heatmap_", input$metadata_block_names, "_", Sys.Date(), ".png", sep = "")
+    },
+    content = function(file) {
+      req(averaged_parameters_by_species()$odmax)
+      data <- scale(averaged_parameters_by_species()$odmax)
+      png(file, width = 800, height = 600)
+      heatmap.2(data,
+                main = paste("Heatmap of Average ODmax by Species"),
+                xlab = "Processed Sheets",
+                ylab = input$metadata_block_names,
+                col = viridis::viridis(256),
+                margins = c(10, 10),
+                trace = "none",
+                key = T,
+                keysize = 1.0,
+                key.title = "Z-score",
+                dendogram = "both",
+                lhei = c(1,4), 
+                lwid = c(1,4),
+                cexRow = 1.3,
+                cexCol = 1.3
+      )
+      dev.off()
+    }
+  )
+  
+  output$download_max_percap_heatmap <- downloadHandler(
+    filename = function() {
+      paste("µmax_Heatmap_", input$metadata_block_names, "_", Sys.Date(), ".png", sep = "")
+    },
+    content = function(file) {
+      req(averaged_parameters_by_species()$max_percap)
+      data <- scale(averaged_parameters_by_species()$max_percap)
+      png(file, width = 800, height = 600)
+      heatmap.2(data,
+                main = paste("Heatmap of Average µmax by Species"),
+                xlab = "Processed Sheets",
+                ylab = input$metadata_block_names,
+                col = viridis::viridis(256),
+                margins = c(10, 10),
+                trace = "none",
+                key = T,
+                keysize = 1.0,
+                key.title = "Z-score",
+                dendogram = "both",
+                lhei = c(1,4), 
+                lwid = c(1,4),
+                cexRow = 1.3,
+                cexCol = 1.3
+      )
+      dev.off()
+    }
+  )
+  
   
   output$stored_results_table <- renderTable({
     req(input$stored_sheet)
