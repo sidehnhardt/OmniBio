@@ -21,7 +21,8 @@ viridisLite_0.4.2
 shinyjs_2.1.0     
 bslib_0.8.0       
 gcplyr_1.9.0      
-ggplot2_3.5.1    
+ggplot2_3.5.1 
+gplots_3.2.0
 tidyr_1.3.1       
 dplyr_1.1.4       
 xlsx_0.6.5        
