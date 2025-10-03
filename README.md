@@ -3,7 +3,7 @@ OmniBio: An Easy-to-Use Web App for Kinetic Growth Parameter Calculation from Mi
 
 Welcome to the base code of OmniBio Shiny App platform allocated in <https://sdehnhardt.shinyapps.io/OmniBio/>. The code is written under Shiny App logic. First, the User Interface (UI) is described, to then apply the Server logic with all the calculations and plots made by OmniBio. There is a brief comment before each important part of the code to understand the coding logic. 
 
-Thank you for reading our publication in Bioinformatic Advances and BioRXiv! 
+Thank you for reading our publication in BioRXiv (https://www.biorxiv.org/content/10.1101/2025.09.05.674595v1)! 
 
 Enjoy the app and the code. 
 
