@@ -1,5 +1,5 @@
 #List of required packages
-required_packages <- c("shiny", "readxl", "xlsx", "dplyr", "tidyr", "ggplot2", "gcplyr", "bslib", "shinyjs", "viridis", "gplots")
+required_packages <- c("shiny", "readxl", "xlsx", "dplyr", "tidyr", "ggplot2", "gcplyr", "bslib", "shinyjs", "viridis", "lubridate")
 
 #Function to install packages if they are not available
 install_if_missing <- function(packages) {
@@ -23,7 +23,7 @@ library(gcplyr)
 library(bslib)
 library(shinyjs)
 library(viridis)
-library(gplots)
+library(lubridate)
 
 #User Interfase
 ui <- fluidPage(
@@ -37,87 +37,121 @@ ui <- fluidPage(
   sidebarLayout(
     sidebarPanel(
       radioButtons(
-        inputId = "input_program",
-        label = "Select your microplate reader software: ",
-        choices = list("Sinergy HTX/Cytation - Gen5" = "method_gen", "Tecan Infinite - iControl" = "method_icont"),
-        selected = "method_gen"
+        inputId = "file_type",
+        label = "Select the file type/extension where your date is saved: ",
+        choices = list(".CSV" = "csv_type", ".TSV" = "tsv_type", "EXCEL" = "excel_type")
       ),
-      fileInput("excel_file", "Upload your Optical Density measurements: (Excel file)", accept = c(".xlsx", ".xls")),
-      uiOutput("sheet_selector"),
-      textInput("new_sheet_name", "Enter new sheet name", value = ""),
       conditionalPanel(
-        condition = "input.input_program == 'method_icont'",
-        numericInput("label", "*Enter the number of the Label where the Optical Density data is located:", value = "")
+        condition = "input.file_type == 'csv_type'",
+        fileInput("csv_file", "Upload your Optical Density measurements: (.csv file)", accept = ".csv")
       ),
-      fileInput("csv_file", "Upload your experimental design: (Excel file)", accept = c(".xlsx", "xls")),
-      textInput("metadata_block_names", "Specify the specie of your microorganism"),
+      conditionalPanel(
+        condition = "input.file_type == 'tsv_type'",
+        fileInput("tsv_file", "Upload your Optical Density measurements: (.tsv file)", accept = ".tsv")
+      ),
+      conditionalPanel(
+        condition = "input.file_type == 'excel_type'",
+        fileInput("excel_file", "Upload your Optical Density measurements: (Excel file)", accept = c(".xlsx", ".xls")),
+        uiOutput("sheet_selector"),
+        textInput("new_sheet_name", "Enter new sheet name", value = ""),
+        textInput("range_excel", "Specify the start/end of rows and columns of your data (Example B24:CU73)", value = "B24:CU73")
+      ),
+      fileInput("metadata_file", "Upload your experimental design: (Excel file)", accept = c(".xlsx", "xls")),
+      numericInput("blank", "Add the absorbance of your blank solution", value = 0),
+      radioButtons(
+        inputId = "noisy",
+        label = "Is your data noisy? Try out this smoothing option.",
+        choices = list("Yes, I have noise" = "noisy_yes", "No, I do not have noise" = "noisy_no"),
+        selected = "noisy_no"
+      ),
+      conditionalPanel(
+        condition = "input.noisy == 'noisy_yes'",
+        sliderInput(inputId = "noisy_data",
+                    label = "Choose between these different windows options: (3 or 5 is often a good default)",
+                    min = 3,
+                    max = 9,
+                    value = 3, 
+                    step = 2)
+      ),
+      checkboxInput("use_time_limit", "Set a time limit for calculation (AUC/ODmax)?", value = FALSE),
+      conditionalPanel(
+        condition = "input.use_time_limit == true",
+        numericInput("time_limit_val", "Calculate up to (hours): (This time must be the maximum value of the last point of measurement)", value = 24, min = 0)
+      ),
+      textInput("metadata_block_names", "Specify a Plate Label (ex. microorganism specie or culture condition)"),
       actionButton("process_data", "Process"),
       downloadButton("download_data", "Download your kinetic parameters"),
       downloadButton("download_plots", "Download your growth curve plots", class = "btn-sm"),
       downloadButton("download_lag_plots", "Download your lag phase plots", class = "btn-sm"),
       downloadButton("download_max_percap_plot", "Download your µmax plots", class = "btn-sm"),
       downloadButton("download_performance_plot", "Download your Performance plots", class = "btn-sm"),
-      downloadButton("download_lag_heatmap", "Download Lag Time Heatmap", class = "btn-sm"),
-      downloadButton("download_auc_heatmap", "Download AUC Heatmap", class = "btn-sm"),
-      downloadButton("download_odmax_heatmap", "Download ODmax Heatmap", class = "btn-sm"),
-      downloadButton("download_max_percap_heatmap", "Download µmax Heatmap", class = "btn-sm")
+      downloadButton("download_all_heatmaps", "Download All Heatmaps", class = "btn-sm")
     ),
     
     mainPanel(
       tabsetPanel(
         tabPanel("HOW TO USE?", p("This app helps you to avoid using the big chunk of code
-                                   when using gcplyr (Blazanin, M. gcplyr:
+                                   when using gcplyr R package", 
+                                  a("Blazanin, M. gcplyr:
                                    an R package for microbial growth curve data analysis.
-                                   BMC Bioinformatics 25, 232 (2024).
-                                   https://doi.org/10.1186/s12859-024-05817-3)
-                                   to calculate kinetic parameters. In the side panel, you need to load
-                                   an Excel file only with the output provided by Gen5 or iControl software,
-                                   as well as your experimental design (metadata) in Excel format, too.
+                                   BMC Bioinformatics 25, 232 (2024)", href = "https://doi.org/10.1186/s12859-024-05817-3",
+                                     target = "_blank"),
+                                   "to calculate kinetic parameters. See this tutorial to know how to use the app",
+                                  a("(Video Tutorial)", href = "https://youtu.be/gnTkjyRKTRU",
+                                    target = "_blank"),
+                                  br(),
+                                  "In the side panel, you need to load
+                                   a file in .CSV, .TSV, or Excel format with the output provided by your favourite plate reader,
+                                   as well as your experimental design (metadata) as an Excel file.
                                    When you finally load all your data, push the PROCESS button and
                                    all the calculations will be performed.
-                                   *Important: note that when choosing iControl software, the Label panel is available
-                                   and mandatory for performing the calculations*
-                                   Thanks for using our app!")),
+                                   Below this text, you can find figures of how your data should look like, as well as your experimental design.
+                                   See our example data, click the link below to download them.",
+                                  br(),
+                                  a("Example data", href = "https://drive.google.com/drive/folders/1ttOatQ1jJVrthyMaTp1FP7v-6P0tubG6?usp=sharing", 
+                                    target = "_blank"),
+                                  br(),
+                                   "Thanks for using our app!",
+                                  br(),
+                                  "Need to run the app locally? Dowload our source code!",
+                                  br(),
+                                  a("Link to the source code", href = "https://github.com/sidehnhardt/OmniBio/blob/main/OmniBio_code.R",
+                                    target = "_blank")),
+                 br(),
+                 tags$img(src = "Measurements.png", height = "180px", width = "516px"),
+                 br(),
+                 strong("Figure 1. This is how your measurements should look like, either is separated by commas, tabs, or is in Excel format.
+                        Please, ignore the Temperature column, since it is not mandatory for the app to work."),
+                 br(),
+                 tags$img(src = "Metadata.png", height = "127px", width = "650px"),
+                 br(),
+                 strong("Figure 2. This is how your experimental design in Excel file should look like. Colors are irrelevant for the app.
+                        Please, fill all the blanks within the metadata.")),
         tabPanel("Growth curve checker", p("In this tab you will see a plot
                                            that contains all of your growth curves per well.
                                            Use it to check all the replicates and the success of
                                            your experiment."), plotOutput("growth_curve")),
-        tabPanel("Results", p("Here are your results of the calculations made for kinetic parameters."),
-                 tabsetPanel(
-                   tabPanel("Lag time data", p("In this tab is shown the first rows
-                                               of your data when calculating lag phase time.
-                                               Below, it is represented the plots of the growth curves,
-                                               where the dashed line is the cut where lag phase ended."),
-                            tableOutput("lag"), plotOutput("lag_time_plot")),
-                   tabPanel("µmax calculations", p("max_percap corresponds to the
-                                                   maximum growth rate (µmax) ocurring in a culture media.
-                                                   In this app, the µmax is calculated via the derivate
-                                                   of the growth in its maximum point. The table shows the first rows of the data,
-                                                   where max_percap corresponds to max_percap.
-                                                   The plots shown here are
-                                                   a representation of that derivate, where the red dot is the maximum
-                                                   point."),
-                            tableOutput("max_percap"), plotOutput("max_percap_plot")),
-                   tabPanel("Performance", p("Performance is another way to say maximum optical density.
-                                             Here its shown the table of that calculations, and also plots, where
-                                             the red dot shows the point of saturation of cells in the culture media."),
-                            tableOutput("ODmax"), plotOutput("ODmax_plot")),
-                   tabPanel("Area Under the Curve", p("Area Under the Curve (AUC) is just all the area
-                                                      below the growth curve."),
-                            tableOutput("AUC")),
-                   tabPanel("Table Summary", p("Here its shown the first rows
-                                               of all the calculated data, which you can download
-                                               as an Excel file, using the button in the side panel."),
-                            tableOutput("all"))
-                 )),
-        tabPanel("Stored Results", p("Here you can view the stored results for each sheet."),
+        tabPanel("Results", p("Here you can view the stored results for each data calculated."),
                  selectInput("stored_sheet", "Select Stored Sheet", choices = NULL),
                  tabsetPanel(
-                   tabPanel("Table summary", tableOutput("stored_results_data")),
+                   tabPanel("Table summary",
+                            p("Here its shown the first rows
+                                               of all the calculated data, which you can download
+                                               as an Excel file, using the button in the side panel."), 
+                            tableOutput("stored_results_data")),
                    tabPanel("Growth Curves", plotOutput("stored_results_growth_curve")),
-                   tabPanel("Lag Time Plot", plotOutput("stored_results_lag_plot")),
-                   tabPanel("µmax Plot", plotOutput("stored_results_max_percap_plot")),
-                   tabPanel("Performance Plot", plotOutput("stored_results_ODmax_plot"))
+                   tabPanel("Lag Time Plot",
+                            p("In this tab you can find your Lag Time Phase plot, with a dashed line which cut the lag phase, as well as the slope 
+                              (red line) to calculate the lag time."),
+                            plotOutput("stored_results_lag_plot")),
+                   tabPanel("µmax Plot",
+                            p("This is the plot of the maximum growth rate (µmax) ocurring in a culture media. The µmax is calculated via the derivate of the growth in its maximum point.
+                            The plots shown here are a representation of that derivate, where the red dot is the maximum point."),
+                            plotOutput("stored_results_max_percap_plot")),
+                   tabPanel("Performance Plot",
+                            p("Performance is another way to say maximum optical density.
+                            Here its shown the plots, where the red dot shows the point of saturation of cells in the culture media."), 
+                            plotOutput("stored_results_ODmax_plot"))
                  )
         ),
         tabPanel("Heatmaps by Species",
@@ -139,7 +173,7 @@ server <- function(input, output, session) {
   
   #Disable download buttons
   observe({
-    if (!is.null(input$excel_file) && !is.null(input$csv_file) && processed_data()) {
+    if (!is.null(input$excel_file) && !is.null(input$metadata_file) && processed_data()) {
       shinyjs::enable("download_data")
       shinyjs::enable("download_plots")
       shinyjs::enable("download_lag_plots")
@@ -169,59 +203,34 @@ server <- function(input, output, session) {
   
   #Reactive for file upload
   raw_data <- reactive({
-    req(input$excel_file, input$selected_sheet)
-    if (input$input_program == "method_gen") {
-      data <- read_excel(input$excel_file$datapath, col_names = F, sheet = input$selected_sheet) 
-      time_pos <- which(data == "Time", arr.ind = T)
-      col_names <- as.list(data[time_pos[2,1],2:ncol(data)])
-      data <- data[(time_pos[2,1] + 1):nrow(data),
-                   (time_pos[2,2]:ncol(data))]
-      colnames(data) <- col_names
-      data$Time_POSIXct <- as.POSIXct(as.numeric(data$Time) * (60*60*24), origin = "1899-12-30", tz = "UTC")
-      data <- data[,-2]
-      data <- na.omit(data)
-      data <- data %>% mutate(
-        Timediff = as.numeric(Time_POSIXct - lag(Time_POSIXct), units = "hours"),
-        Time = cumsum(replace_na(Timediff, 0)
-        ))
-      data <- data[,1:(ncol(data)-2)]
-      
+    if (input$file_type == "excel_type") {
+      req(input$excel_file, input$selected_sheet)
+      data <- read_excel(input$excel_file$datapath, range = input$range_excel, sheet = input$selected_sheet) 
+      data$Time <- as.numeric(as.duration(data$Time - first(data$Time)))
+      data$Time <- data$Time/3600
+      return(data)
+    
+    } else if (input$file_type == "csv_type") {
+      req(input$csv_file)
+      data <- read.csv(input$csv_file$datapath)
+      data$Time <- data$Time %>% hms() %>% as.duration() %>% as.numeric()
+      data$Time <- data$Time/3600
       return(data)
       
-    } else if (input$input_program == "method_icont") {
-      tecan_out <- read_excel(input$excel_file$datapath, col_names = FALSE, sheet = input$selected_sheet)
-      label_pos <- grep("^Label", tecan_out$...1)
-      time_pos_t <- which(tecan_out == "Time [s]", arr.ind = T)
-      time_tec <- tecan_out[time_pos_t[input$label,1],]
-      ttime <- t(time_tec)
-      
-      start_pos <- label_pos[input$label]
-      end_pos <- if (length(label_pos) > 1) {
-        label_pos[2] - 2 
-      } else {
-        nrow(tecan_out)
-      }
-      label_x <- tecan_out[start_pos:end_pos,]
-      
-      label_x <- label_x[which(label_x == "A1"):nrow(label_x),]
-      row.names(label_x) <- label_x$...1
-      label_x <- data.frame(t(label_x))
-      label_x <- label_x[-1,]
-      label_x <- na.omit(label_x)
-      
-      label_x <- cbind(Time = ttime[-1,], label_x)
-      
-      row.names(label_x) <- seq(1, nrow(label_x))
-      
-      return(label_x)
+    } else if (input$file_type == "tsv_type") {
+      req(input$tsv_file)
+      data <- read.delim(input$tsv_file$datapath)
+      data$Time <- data$Time %>% hms() %>% as.duration() %>% as.numeric()
+      data$Time <- data$Time/3600
+      return(data)
     }
     
   })
   
   #Reactive for metadata file upload
   experimental_design <- reactive({
-    req(input$csv_file)
-    metadata <- import_blockdesigns(input$csv_file$datapath, block_names = input$metadata_block_names)
+    req(input$metadata_file)
+    metadata <- import_blockdesigns(input$metadata_file$datapath, block_names = input$metadata_block_names)
 
     return(metadata)
   })
@@ -230,7 +239,7 @@ server <- function(input, output, session) {
   tidy_data <- eventReactive(input$process_data, {
     req(raw_data())
     data_tidy <- trans_wide_to_tidy(raw_data(), id_cols = c("Time"))
-
+    data_tidy$Measurements <- data_tidy$Measurements - input$blank
     return(data_tidy)
   })
   
@@ -264,14 +273,27 @@ server <- function(input, output, session) {
 
     return(deriv)
   })
+  
   percap <- eventReactive(input$process_data, {
     req(deriv_cin(), input$metadata_block_names)
-    percap_cin <- deriv_cin() %>% group_by(Well, !!sym(input$metadata_block_names)) %>%
-      mutate(deriv_percap = calc_deriv(x = Time, y = Measurements,
-                                       percapita = TRUE, blank = 0))
-
-    return(percap_cin)
+    percap_cin <- deriv_cin() %>% group_by(Well, !!sym(input$metadata_block_names))
+    if (input$noisy == "noisy_no") {
+      percap_cin %>%
+        mutate(deriv_percap = calc_deriv(x = Time, 
+                                         y = Measurements,
+                                         percapita = TRUE, 
+                                         blank = 0))
+      
+    } else {
+      percap_cin %>%
+        mutate(deriv_percap = calc_deriv(x = Time, 
+                                         y = Measurements,
+                                         percapita = TRUE, 
+                                         blank = 0,
+                                         window_width_n = input$noisy_data)) 
+    }
   })
+  
   doub_ti <- eventReactive(input$process_data, {
     req(percap(), input$metadata_block_names)
     doub_times <- percap() %>% group_by(Well, !!sym(input$metadata_block_names)) %>%
@@ -293,12 +315,17 @@ server <- function(input, output, session) {
   
   ##Plot lag
   lag_time_plot <- eventReactive(input$process_data, {
-    req(lagtime(), doub_ti())
+    req(lagtime(), doub_ti(), max_percap())
     lag_data <- lagtime()
-    ggplot(doub_ti(), aes(x = Time, y = Measurements)) +
+    slope_data <- max_percap()
+    ggplot(doub_ti(), aes(x = Time, y = log(Measurements))) +
       geom_line() +
-      facet_wrap(~Well, nrow = 8, ncol = 12) +
+      facet_wrap(~Well, nrow = 8, ncol = 12) + 
       geom_vline(data = lag_data, aes(xintercept = lag_time), lty = 2) +
+      geom_abline(data = slope_data,
+                  color = "red",
+                  aes(slope = max_percap,
+                      intercept = log(max_percap_dens) - max_percap * max_percap_time)) +
       labs(title = "Lag time of each strain", caption = "Vertical lines represent the time when the lag time ends")
   })
   
@@ -308,6 +335,7 @@ server <- function(input, output, session) {
     max_percap_data <- doub_ti() %>% group_by(Well, !!sym(input$metadata_block_names)) %>%
       summarize(max_percap = max_gc(deriv_percap, na.rm = TRUE),
                 max_percap_time = extr_val(Time, which_max_gc(deriv_percap)),
+                max_percap_dens = extr_val(Measurements, which_max_gc(deriv_percap)),
                 doub_time = doubling_time(y = max_percap)) # Esta línea parece incorrecta, doub_time debe calcularse con max_percap
 
     return(max_percap_data)
@@ -320,7 +348,7 @@ server <- function(input, output, session) {
     ggplot(data = doub_ti(),
            aes(x = Time, y = deriv_percap)) +
       geom_line() +
-      facet_wrap(~Well) +
+      facet_wrap(~Well, nrow = 8, ncol = 12) +
       geom_point(data = max_percap_data,
                  aes(x = max_percap_time, y = max_percap),
                  size = 2, color = "red") +
@@ -331,10 +359,18 @@ server <- function(input, output, session) {
   ##OD max
   ODmax <- eventReactive(input$process_data, {
     req(doub_ti(), input$metadata_block_names)
-    odmax_data <- doub_ti() %>% group_by(Well, !!sym(input$metadata_block_names)) %>%
+    data_for_calc <- doub_ti()
+    
+    if (input$use_time_limit && !is.null(input$time_limit_val)) {
+      data_for_calc <- data_for_calc %>% 
+        filter(Time <= input$time_limit_val)
+    }
+    
+    odmax_data <- data_for_calc %>% 
+      group_by(Well, !!sym(input$metadata_block_names)) %>%
       summarize(max_dens = max_gc(Measurements, na.rm = TRUE),
                 max_time = extr_val(Time, which_max_gc(Measurements)))
-
+    
     return(odmax_data)
   })
   
@@ -344,7 +380,7 @@ server <- function(input, output, session) {
     ggplot(data = doub_ti(),
            aes(x = Time, y = Measurements)) +
       geom_line() +
-      facet_wrap(~Well) +
+      facet_wrap(~Well, nrow = 8, ncol = 12) +
       geom_point(data = ODmax_data,
                  aes(x = max_time, y = max_dens),
                  size = 2, color = "red") +
@@ -352,9 +388,18 @@ server <- function(input, output, session) {
   })
   
   ##AUC
+  ##AUC (Con filtro de tiempo opcional)
   AUC <- eventReactive(input$process_data, {
-    req(doub_ti(), ODmax())
-    doub_ti() %>% group_by(Well, !!sym(input$metadata_block_names)) %>% 
+    req(doub_ti(), ODmax()) 
+    data_for_calc <- doub_ti()
+    
+    if (input$use_time_limit && !is.null(input$time_limit_val)) {
+      data_for_calc <- data_for_calc %>% 
+        filter(Time <= input$time_limit_val)
+    }
+    
+    data_for_calc %>% 
+      group_by(Well, !!sym(input$metadata_block_names)) %>% 
       summarize(auc = auc(x = Time, y = Measurements))
   })
   
@@ -369,16 +414,35 @@ server <- function(input, output, session) {
 
   })
   
+  observeEvent(all_data(), {
+    showModal(modalDialog(
+      title = "Processing",
+      "All the calculations are done! You may proceed to check the results.",
+      easyClose = T, 
+      footer = modalButton("Dismiss")
+    ))
+  })
+  
   observeEvent(input$process_data, {
     if (!is.null(merge_raw()) && nrow(merge_raw()) > 0) {
       processed_data(TRUE)
       
       new_sheet_label <- input$new_sheet_name
+      
+      #Names of the files or sheets
       if (trimws(new_sheet_label) == "") {
-        new_sheet_label <- input$selected_sheet
+        if (input$file_type == "excel_type") {
+          new_sheet_label <- input$selected_sheet
+        } else if (input$file_type == "csv_type") {
+          new_sheet_label <- input$csv_file$name 
+        } else if (input$file_type == "tsv_type") {
+          new_sheet_label <- input$tsv_file$name
+        } else {
+          new_sheet_label <- paste0("Data_", Sys.time()) # Fallback for security
+        }
       }
       
-      #Create a list to save the results of the actual sheet
+      #Create a list to save the results of the actual sheet/file
       current_results <- list(
         data = all_data(), 
         growth_curve = growth_curve(),
@@ -389,44 +453,15 @@ server <- function(input, output, session) {
       
       #Save the list
       stored_results[[new_sheet_label]] <- current_results
-      updateSelectInput(session, "stored_sheet", choices = names(stored_results))
+      updateSelectInput(session, "stored_sheet", choices = names(stored_results), selected = new_sheet_label)
       updateTextInput(session, "new_sheet_name", value = "")
+      
     } else {
       processed_data(FALSE)
     }
   })
   
-  observeEvent(input$process_data, {
-    withProgress(message = "Processing data...", value = 0, {
-      
-      incProgress(0.1, detail = "Reading raw data")
-      raw_data()
-      
-      incProgress(0.2, detail = "Tidying data")
-      tidy_data()
-      
-      incProgress(0.4, detail = "Merging with metadata")
-      merge_raw()
-      
-      incProgress(0.6, detail = "Calculating derivatives")
-      deriv_cin()
-      percap()
-      doub_ti()
-      
-      incProgress(0.8, detail = "Calculating kinetic parameters")
-      growth_curve()
-      max_percap()
-      max_percap_plot()
-      lagtime()
-      lag_time_plot()
-      ODmax()
-      ODmax_plot()
-      AUC()
-      
-      incProgress(1, detail = "Done!")
-    })
-  })
-  
+
   #Enable buttons post-calculations
   observe({
     if (processed_data()) {
@@ -547,69 +582,46 @@ server <- function(input, output, session) {
   
   
   #Function to render heatmap
-  render_parameter_heatmap <- function(data, parameter_name) {
-    renderPlot({
-      req(data)
-
-      heatmap.2(data(),
+  draw_heatmap_logic <- function(data, parameter_name, species_label) {
+    
+    if (!is.null(data) && ncol(data) > 0) {
+      heatmap(data,
               main = paste("Heatmap of Average", parameter_name, "by Species"),
               xlab = "Processed Sheets",
-              ylab = input$metadata_block_names,
+              ylab = species_label,
               col = viridis::viridis(256),
-              margins = c(10, 10),
-              trace = "none",
-              key = T,
-              keysize = 1.0,
-              key.title = "Z-score",
-              dendogram = "both",
-              lhei = c(1,4), 
-              lwid = c(1,4),
-              cexRow = 1.3,
-              cexCol = 1.3
+              margins = c(10, 10)
       )
-    })
+    } else {
+      plot.new()
+      text(0.5, 0.5, "No Data Available for this parameter")
+    }
   }
   
   #Render heatmaps
-  output$lag_heatmap_species <- render_parameter_heatmap(
-    reactive({
+  output$lag_heatmap_species <- renderPlot({
     data <- averaged_parameters_by_species()$lag
-    if (!is.null(data) && ncol(data) > 0) {
-      return(scale(data))
-    } else {
-      return(NULL)
-    }
-    }), "Lag Time (Z-score)")
+    req(data)
+    draw_heatmap_logic(scale(data), "Lag Time (Z-score)", input$metadata_block_names)
+  })
   
-  output$AUC_heatmap_species <- render_parameter_heatmap(
-    reactive({
-      data <- averaged_parameters_by_species()$AUC
-      if (!is.null(data) && ncol(data) > 0) {
-        return(scale(data))
-      } else {
-        return(NULL)
-      }
-    }), "AUC (Z-score)")
+  output$AUC_heatmap_species <- renderPlot({
+    data <- averaged_parameters_by_species()$AUC
+    req(data)
+    draw_heatmap_logic(scale(data), "AUC (Z-score)", input$metadata_block_names)
+  })
   
-  output$odmax_heatmap_species <- render_parameter_heatmap(
-    reactive({
-      data <- averaged_parameters_by_species()$odmax
-      if (!is.null(data) && ncol(data) > 0) {
-        return(scale(data))
-      } else {
-        return(NULL)
-      }
-    }), "ODmax (Z-score)")
+  output$odmax_heatmap_species <- renderPlot({
+    data <- averaged_parameters_by_species()$odmax
+    req(data)
+    draw_heatmap_logic(scale(data), "ODmax (Z-score)", input$metadata_block_names)
+  })
   
-  output$max_percap_heatmap_species <- render_parameter_heatmap(
-    reactive({
-      data <- averaged_parameters_by_species()$max_percap
-      if (!is.null(data) && ncol(data) > 0) {
-        return(scale(data))
-      } else {
-        return(NULL)
-      }
-    }), "µmax (Z-score)")
+  output$max_percap_heatmap_species <- renderPlot({
+    data <- averaged_parameters_by_species()$max_percap
+    req(data)
+    draw_heatmap_logic(scale(data), "µmax (Z-score)", input$metadata_block_names)
+  })
   
   #Show original data
   output$growth_curve <- renderPlot({
@@ -626,204 +638,97 @@ server <- function(input, output, session) {
     req(max_percap_plot())
     max_percap_plot()
   })
-  
-  output$deriv <- renderTable({
-    req(doub_ti())
-    head(doub_ti())
-  })
-  
-  output$lag <- renderTable({
-    req(lagtime())
-    head(lagtime())
-  })
-  
-  output$max_percap <- renderTable({
-    req(max_percap())
-    head(max_percap())
-  })
-  
-  output$ODmax <- renderTable({
-    req(ODmax())
-    head(ODmax())
-  })
-  
-  output$AUC <- renderTable({
-    req(AUC())
-    head(AUC())
-  })
-  
-  output$all <- renderTable({
-    req(all_data())
-    head(all_data())
-  })
-  
+
   output$ODmax_plot <- renderPlot({
     req(ODmax_plot())
     ODmax_plot()
   })
   
+#####DOWNLOAD HANDLERS#####
   output$download_data <- downloadHandler(
     filename = function() {
-      paste("Kinetic_parameters_", input$metadata_block_names, "_", input$new_sheet_name, ".xlsx", sep = "")
+      paste("Kinetic_parameters_", input$metadata_block_names, "_", input$stored_sheet, ".xlsx", sep = "")
     },
     content = function(file) {
-      req(all_data())
-      write.xlsx(all_data(), file, row.names = FALSE)
+      req(input$stored_sheet, stored_results[[input$stored_sheet]]$data)
+      write.xlsx(stored_results[[input$stored_sheet]]$data, file, row.names = FALSE)
     }
   )
   
   output$download_plots <- downloadHandler(
     filename = function() {
-      paste("Growth_curve_plots_", input$metadata_block_names, "_", input$new_sheet_name, ".pdf", sep = "")
+      paste("Growth_curve_plots_", input$metadata_block_names, "_", input$stored_sheet, ".pdf", sep = "")
     },
     content = function(file) {
-      req(growth_curve())
-      ggsave(file, plot = growth_curve(), device = "pdf", width = 15, height = 10)
+      req(input$stored_sheet, stored_results[[input$stored_sheet]]$growth_curve)
+      ggsave(file, plot = stored_results[[input$stored_sheet]]$growth_curve, device = "pdf", width = 15, height = 10)
     }
   )
-  
+
   output$download_lag_plots <- downloadHandler(
     filename = function() {
-      paste("lag_plots_", input$metadata_block_names, "_", input$new_sheet_name, ".pdf", sep = "")
+      paste("lag_plots_", input$metadata_block_names, "_", input$stored_sheet, ".pdf", sep = "")
     },
     content = function(file) {
-      req(lag_time_plot())
-      ggsave(file, plot = lag_time_plot(), device = "pdf", width = 15, height = 10)
+      req(input$stored_sheet, stored_results[[input$stored_sheet]]$lag_plot)
+      ggsave(file, plot = stored_results[[input$stored_sheet]]$lag_plot, device = "pdf", width = 15, height = 10)
     }
   )
-  
+
   output$download_max_percap_plot <- downloadHandler(
     filename = function() {
-      paste("max_percap_plots_", input$metadata_block_names, "_", input$new_sheet_name, ".pdf", sep = "")
+      paste("max_percap_plots_", input$metadata_block_names, "_", input$stored_sheet, ".pdf", sep = "")
     },
     content = function(file) {
-      req(max_percap_plot())
-      ggsave(file, plot = max_percap_plot(), device = "pdf", width = 15, height = 10)
+      req(input$stored_sheet, stored_results[[input$stored_sheet]]$max_percap_plot)
+      ggsave(file, plot = stored_results[[input$stored_sheet]]$max_percap_plot, device = "pdf", width = 15, height = 10)
     }
   )
-  
+
   output$download_performance_plot <- downloadHandler(
     filename = function() {
-      paste("Performance_plots_", input$metadata_block_names, "_", input$new_sheet_name, ".pdf", sep = "")
+      paste("Performance_plots_", input$metadata_block_names, "_", input$stored_sheet, ".pdf", sep = "")
     },
     content = function(file) {
-      req(ODmax_plot())
-      ggsave(file, plot = ODmax_plot(), device = "pdf", width = 15, height = 10)
+      req(input$stored_sheet, stored_results[[input$stored_sheet]]$ODmax_plot)
+      ggsave(file, plot = stored_results[[input$stored_sheet]]$ODmax_plot, device = "pdf", width = 15, height = 10)
     }
-  )
+  )  
   
-  output$download_lag_heatmap <- downloadHandler(
+  output$download_all_heatmaps <- downloadHandler(
     filename = function() {
-      paste("Lag_Time_Heatmap_", input$metadata_block_names, "_", Sys.Date(), ".png", sep = "")
+      paste("All_Heatmaps_", input$metadata_block_names, "_", Sys.Date(), ".pdf", sep = "")
     },
     content = function(file) {
-      req(averaged_parameters_by_species()$lag)
-      data <- scale(averaged_parameters_by_species()$lag)
-      png(file, width = 800, height = 600)
-      heatmap.2(data,
-                main = paste("Heatmap of Average lag time by Species"),
-                xlab = "Processed Sheets",
-                ylab = input$metadata_block_names,
-                col = viridis::viridis(256),
-                margins = c(10, 10),
-                trace = "none",
-                key = T,
-                keysize = 1.0,
-                key.title = "Z-score",
-                dendogram = "both",
-                lhei = c(1,4), 
-                lwid = c(1,4),
-                cexRow = 1.3,
-                cexCol = 1.3
-      )
+      req(averaged_parameters_by_species())
+      data_list <- averaged_parameters_by_species()
+      species_label <- input$metadata_block_names
+      
+      pdf(file, width = 10, height = 10) 
+
+      #Page 1: Lag_time
+      if(!is.null(data_list$lag)) {
+        draw_heatmap_logic(scale(data_list$lag), "Lag Time (Z-score)", species_label)
+      }
+      
+      #Page 2: AUC
+      if(!is.null(data_list$AUC)) {
+        draw_heatmap_logic(scale(data_list$AUC), "AUC (Z-score)", species_label)
+      }
+      
+      #Page 3: ODmax
+      if(!is.null(data_list$odmax)) {
+        draw_heatmap_logic(scale(data_list$odmax), "ODmax (Z-score)", species_label)
+      }
+      
+      # Page 4: µmax
+      if(!is.null(data_list$max_percap)) {
+        draw_heatmap_logic(scale(data_list$max_percap), "µmax (Z-score)", species_label)
+      }
+      
       dev.off()
     }
   )
-  
-  output$download_auc_heatmap <- downloadHandler(
-    filename = function() {
-      paste("AUC_Heatmap_", input$metadata_block_names, "_", Sys.Date(), ".png", sep = "")
-    },
-    content = function(file) {
-      req(averaged_parameters_by_species()$AUC)
-      data <- scale(averaged_parameters_by_species()$AUC)
-      png(file, width = 800, height = 600)
-      heatmap.2(data,
-                main = paste("Heatmap of Average AUC by Species"),
-                xlab = "Processed Sheets",
-                ylab = input$metadata_block_names,
-                col = viridis::viridis(256),
-                margins = c(10, 10),
-                trace = "none",
-                key = T,
-                keysize = 1.0,
-                key.title = "Z-score",
-                dendogram = "both",
-                lhei = c(1,4), 
-                lwid = c(1,4),
-                cexRow = 1.3,
-                cexCol = 1.3
-      )
-      dev.off()
-    }
-  )
-  
-  output$download_odmax_heatmap <- downloadHandler(
-    filename = function() {
-      paste("ODmax_Heatmap_", input$metadata_block_names, "_", Sys.Date(), ".png", sep = "")
-    },
-    content = function(file) {
-      req(averaged_parameters_by_species()$odmax)
-      data <- scale(averaged_parameters_by_species()$odmax)
-      png(file, width = 800, height = 600)
-      heatmap.2(data,
-                main = paste("Heatmap of Average ODmax by Species"),
-                xlab = "Processed Sheets",
-                ylab = input$metadata_block_names,
-                col = viridis::viridis(256),
-                margins = c(10, 10),
-                trace = "none",
-                key = T,
-                keysize = 1.0,
-                key.title = "Z-score",
-                dendogram = "both",
-                lhei = c(1,4), 
-                lwid = c(1,4),
-                cexRow = 1.3,
-                cexCol = 1.3
-      )
-      dev.off()
-    }
-  )
-  
-  output$download_max_percap_heatmap <- downloadHandler(
-    filename = function() {
-      paste("µmax_Heatmap_", input$metadata_block_names, "_", Sys.Date(), ".png", sep = "")
-    },
-    content = function(file) {
-      req(averaged_parameters_by_species()$max_percap)
-      data <- scale(averaged_parameters_by_species()$max_percap)
-      png(file, width = 800, height = 600)
-      heatmap.2(data,
-                main = paste("Heatmap of Average µmax by Species"),
-                xlab = "Processed Sheets",
-                ylab = input$metadata_block_names,
-                col = viridis::viridis(256),
-                margins = c(10, 10),
-                trace = "none",
-                key = T,
-                keysize = 1.0,
-                key.title = "Z-score",
-                dendogram = "both",
-                lhei = c(1,4), 
-                lwid = c(1,4),
-                cexRow = 1.3,
-                cexCol = 1.3
-      )
-      dev.off()
-    }
-  )
-  
   
   output$stored_results_table <- renderTable({
     req(input$stored_sheet)
