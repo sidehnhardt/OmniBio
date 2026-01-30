@@ -60,8 +60,8 @@ ui <- fluidPage(
       numericInput("blank", "Add the absorbance of your blank solution", value = 0),
       radioButtons(
         inputId = "noisy",
-        label = "Is your data noisy? Try out this smoothing option.",
-        choices = list("Yes, I have noise" = "noisy_yes", "No, I do not have noise" = "noisy_no"),
+        label = "Is your data noisy or have density close to zero? Try out this smoothing option.",
+        choices = list("Yes" = "noisy_yes", "No" = "noisy_no"),
         selected = "noisy_no"
       ),
       conditionalPanel(
@@ -85,8 +85,12 @@ ui <- fluidPage(
       downloadButton("download_lag_plots", "Download your lag phase plots", class = "btn-sm"),
       downloadButton("download_max_percap_plot", "Download your µmax plots", class = "btn-sm"),
       downloadButton("download_performance_plot", "Download your Performance plots", class = "btn-sm"),
-      downloadButton("download_all_heatmaps", "Download All Heatmaps", class = "btn-sm")
-    ),
+    
+    hr(),
+    h4("Activity Log"),
+    verbatimTextOutput("app_log"),
+    tags$style(type="text/css", "#app_log { height: 200px; overflow-y: scroll; font-size: 11px; color: #333; background-color: #f5f5f5; border: 1px solid #ccc; }")
+  ),
     
     mainPanel(
       tabsetPanel(
@@ -95,8 +99,8 @@ ui <- fluidPage(
                                   a("Blazanin, M. gcplyr:
                                    an R package for microbial growth curve data analysis.
                                    BMC Bioinformatics 25, 232 (2024)", href = "https://doi.org/10.1186/s12859-024-05817-3",
-                                     target = "_blank"),
-                                   "to calculate kinetic parameters. See this tutorial to know how to use the app",
+                                    target = "_blank"),
+                                  "to calculate kinetic parameters. See this tutorial to know how to use the app",
                                   a("(Video Tutorial)", href = "https://youtu.be/gnTkjyRKTRU",
                                     target = "_blank"),
                                   br(),
@@ -111,7 +115,7 @@ ui <- fluidPage(
                                   a("Example data", href = "https://drive.google.com/drive/folders/1ttOatQ1jJVrthyMaTp1FP7v-6P0tubG6?usp=sharing", 
                                     target = "_blank"),
                                   br(),
-                                   "Thanks for using our app!",
+                                  "Thanks for using our app!",
                                   br(),
                                   "Need to run the app locally? Dowload our source code!",
                                   br(),
@@ -153,12 +157,6 @@ ui <- fluidPage(
                             Here its shown the plots, where the red dot shows the point of saturation of cells in the culture media."), 
                             plotOutput("stored_results_ODmax_plot"))
                  )
-        ),
-        tabPanel("Heatmaps by Species",
-                 plotOutput("lag_heatmap_species"),
-                 plotOutput("AUC_heatmap_species"),
-                 plotOutput("odmax_heatmap_species"),
-                 plotOutput("max_percap_heatmap_species")
         )
       )
     )
@@ -170,6 +168,19 @@ server <- function(input, output, session) {
   
   processed_data <- reactiveVal(FALSE)
   stored_results <- reactiveValues()
+  
+  #Loggin system start
+  log_text <- reactiveVal(paste(Sys.time(), "- System ready. Waiting for inputs..."))
+  
+  log_msg <- function(message, type = "INFO") {
+    current_log <- log_text()
+    new_entry <- paste0(format(Sys.time(), "%H:%M:%S"), " [", type, "]: ", message)
+    log_text(paste(new_entry, current_log, sep = "\n"))
+  }
+  
+  output$app_log <- renderText({
+    log_text()
+  })
   
   #Disable download buttons
   observe({
@@ -191,7 +202,12 @@ server <- function(input, output, session) {
   #Reactive for Excel file and obtain sheet names
   sheet_names <- reactive({
     req(input$excel_file)
-    excel_sheets(input$excel_file$datapath)
+    tryCatch({
+      excel_sheets(input$excel_file$datapath)
+    }, error = function(e) {
+      log_msg("Error reading Excel sheets. File might be corrupted.", "ERROR")
+      return(NULL)
+    })
   })
   
   #UI to select the Excel sheet
@@ -203,43 +219,62 @@ server <- function(input, output, session) {
   
   #Reactive for file upload
   raw_data <- reactive({
-    if (input$file_type == "excel_type") {
-      req(input$excel_file, input$selected_sheet)
-      data <- read_excel(input$excel_file$datapath, range = input$range_excel, sheet = input$selected_sheet) 
-      data$Time <- as.numeric(as.duration(data$Time - first(data$Time)))
-      data$Time <- data$Time/3600
-      return(data)
+    req(input$file_type)
     
-    } else if (input$file_type == "csv_type") {
-      req(input$csv_file)
-      data <- read.csv(input$csv_file$datapath)
-      data$Time <- data$Time %>% hms() %>% as.duration() %>% as.numeric()
-      data$Time <- data$Time/3600
+    tryCatch({
+      data <- NULL
+      log_msg(paste("Reading OD file:", input$file_type), "INFO")
+      
+      if (input$file_type == "excel_type") {
+        req(input$excel_file, input$selected_sheet)
+        data <- read_excel(input$excel_file$datapath, range = input$range_excel, sheet = input$selected_sheet) 
+        data$Time <- as.numeric(as.duration(data$Time - first(data$Time)))/3600
+        
+      } else if (input$file_type == "csv_type") {
+        req(input$csv_file)
+        data <- read.csv(input$csv_file$datapath)
+        data$Time <- data$Time %>% hms() %>% as.duration() %>% as.numeric()/3600
+        
+      } else if (input$file_type == "tsv_type") {
+        req(input$tsv_file)
+        data <- read.delim(input$tsv_file$datapath)
+        data$Time <- data$Time %>% hms() %>% as.duration() %>% as.numeric()/3600
+      }
+      
+      log_msg("OD Data loaded successfully.", "SUCCESS")
       return(data)
       
-    } else if (input$file_type == "tsv_type") {
-      req(input$tsv_file)
-      data <- read.delim(input$tsv_file$datapath)
-      data$Time <- data$Time %>% hms() %>% as.duration() %>% as.numeric()
-      data$Time <- data$Time/3600
-      return(data)
-    }
-    
+    }, error = function(e) {
+      log_msg("Error reading OD file. Check format/columns.", "ERROR")
+      # We do NOT show a popup here to avoid spamming, the Log is enough
+      return(NULL)
+    })
   })
   
   #Reactive for metadata file upload
   experimental_design <- reactive({
     req(input$metadata_file)
-    metadata <- import_blockdesigns(input$metadata_file$datapath, block_names = input$metadata_block_names)
-
-    return(metadata)
+    
+    tryCatch({
+      log_msg("Reading Metadata file...", "INFO")
+      metadata <- import_blockdesigns(input$metadata_file$datapath, block_names = input$metadata_block_names)
+      
+      if (nrow(metadata) == 0) stop("Empty metadata")
+      
+      log_msg("Metadata loaded successfully.", "SUCCESS")
+      return(metadata)
+      
+    }, error = function(e) {
+      log_msg("Error reading Metadata. Check format.", "ERROR")
+      return(NULL)
+    })
   })
+
   
   #Transform data to tidy format
   tidy_data <- eventReactive(input$process_data, {
     req(raw_data())
     data_tidy <- trans_wide_to_tidy(raw_data(), id_cols = c("Time"))
-    data_tidy$Measurements <- data_tidy$Measurements - input$blank
     return(data_tidy)
   })
   
@@ -252,7 +287,7 @@ server <- function(input, output, session) {
       mutate(Well = toupper(Well),
              Well = factor(Well, levels = paste0(rep(LETTERS[1:8], each = 12), 1:12))) %>%
       mutate(Time = as.numeric(Time))
-
+    
     return(merge_data)
   })
   
@@ -269,8 +304,8 @@ server <- function(input, output, session) {
   deriv_cin <- eventReactive(input$process_data, {
     req(merge_raw(), input$metadata_block_names) 
     deriv <- merge_raw() %>% group_by(Well, !!sym(input$metadata_block_names)) %>%
-      mutate(deriv = calc_deriv(x = Time, y = Measurements))
-
+      mutate(deriv = calc_deriv(x = Time, y = Measurements, blank = input$blank))
+    
     return(deriv)
   })
   
@@ -282,14 +317,14 @@ server <- function(input, output, session) {
         mutate(deriv_percap = calc_deriv(x = Time, 
                                          y = Measurements,
                                          percapita = TRUE, 
-                                         blank = 0))
+                                         blank = input$blank))
       
     } else {
       percap_cin %>%
         mutate(deriv_percap = calc_deriv(x = Time, 
                                          y = Measurements,
                                          percapita = TRUE, 
-                                         blank = 0,
+                                         blank = input$blank,
                                          window_width_n = input$noisy_data)) 
     }
   })
@@ -298,7 +333,7 @@ server <- function(input, output, session) {
     req(percap(), input$metadata_block_names)
     doub_times <- percap() %>% group_by(Well, !!sym(input$metadata_block_names)) %>%
       mutate(doub_time = doubling_time(y = deriv_percap))
-
+    
     return(doub_times)
   })
   
@@ -308,8 +343,8 @@ server <- function(input, output, session) {
     req(doub_ti(), input$metadata_block_names)
     lag_data <- doub_ti() %>% group_by(Well, !!sym(input$metadata_block_names)) %>%
       summarize(lag_time = lag_time(y = Measurements, x = Time,
-                                    deriv = deriv_percap))
-
+                                    deriv = deriv_percap, blank = input$blank))
+    
     return(lag_data)
   })
   
@@ -337,7 +372,7 @@ server <- function(input, output, session) {
                 max_percap_time = extr_val(Time, which_max_gc(deriv_percap)),
                 max_percap_dens = extr_val(Measurements, which_max_gc(deriv_percap)),
                 doub_time = doubling_time(y = max_percap)) # Esta línea parece incorrecta, doub_time debe calcularse con max_percap
-
+    
     return(max_percap_data)
   })
   
@@ -400,7 +435,7 @@ server <- function(input, output, session) {
     
     data_for_calc %>% 
       group_by(Well, !!sym(input$metadata_block_names)) %>% 
-      summarize(auc = auc(x = Time, y = Measurements))
+      summarize(auc = auc(x = Time, y = Measurements, blank = input$blank))
   })
   
   ##Merge of every kinetic parameters
@@ -411,240 +446,126 @@ server <- function(input, output, session) {
     ODmax_data <- ODmax()
     AUC_data <- AUC()
     data.frame(lag_data, AUC = AUC_data$auc, ODmax = ODmax_data$max_dens, µmax = max_percap_data$max_percap)
-
+    
   })
   
-  observeEvent(all_data(), {
-    showModal(modalDialog(
-      title = "Processing",
-      "All the calculations are done! You may proceed to check the results.",
-      easyClose = T, 
-      footer = modalButton("Dismiss")
-    ))
-  })
   
+  #Shielding the main process events
   observeEvent(input$process_data, {
-    if (!is.null(merge_raw()) && nrow(merge_raw()) > 0) {
+    
+    #Check for Missing Inputs
+    od_file_missing <- FALSE
+    if (input$file_type == "csv_type" && is.null(input$csv_file)) od_file_missing <- TRUE
+    if (input$file_type == "tsv_type" && is.null(input$tsv_file)) od_file_missing <- TRUE
+    if (input$file_type == "excel_type" && is.null(input$excel_file)) od_file_missing <- TRUE
+    
+    if (od_file_missing) {
+      showNotification("Missing Data: Please upload your OD measurements file.", type = "error")
+      log_msg("Process ABORTED: Missing OD file.", "WARNING")
+      return() 
+    }
+    
+    if (is.null(input$metadata_file)) {
+      showNotification("Missing Metadata: Please upload your Experimental Design file.", type = "error")
+      log_msg("Process ABORTED: Missing Metadata file.", "WARNING")
+      return() 
+    }
+    
+    if (trimws(input$metadata_block_names) == "") {
+      showNotification("Missing Label: Please specify the Plate Label.", type = "error")
+      log_msg("Process ABORTED: Missing Plate Label.", "WARNING")
+      return() 
+    }
+    
+    log_msg("Inputs validated. Starting processing...", "INFO")
+    
+    #Safe Execution
+    tryCatch({
+      
+      #Double check if files were read correctly by the reactives
+      if (is.null(raw_data()) || is.null(experimental_design())) {
+        log_msg("Process ABORTED: Invalid input files (Check previous errors).", "WARNING")
+        return()
+      }
+      
+      #Force calculation of the main dataframe
+      final_df <- all_data() 
+      
+      if (nrow(final_df) == 0) {
+        stop("Resulting dataframe is empty (Check if Well IDs match).")
+      }
+      
+      #If we reach here, calculations were successful
       processed_data(TRUE)
       
       new_sheet_label <- input$new_sheet_name
-      
-      #Names of the files or sheets
       if (trimws(new_sheet_label) == "") {
-        if (input$file_type == "excel_type") {
-          new_sheet_label <- input$selected_sheet
-        } else if (input$file_type == "csv_type") {
-          new_sheet_label <- input$csv_file$name 
-        } else if (input$file_type == "tsv_type") {
-          new_sheet_label <- input$tsv_file$name
-        } else {
-          new_sheet_label <- paste0("Data_", Sys.time()) # Fallback for security
-        }
+        new_sheet_label <- paste0("Data_", format(Sys.time(), "%H%M%S"))
       }
       
-      #Create a list to save the results of the actual sheet/file
+      #Save results to the reactive list
       current_results <- list(
-        data = all_data(), 
+        data = final_df, 
         growth_curve = growth_curve(),
         lag_plot = lag_time_plot(),
         max_percap_plot = max_percap_plot(),
         ODmax_plot = ODmax_plot()
       )
       
-      #Save the list
       stored_results[[new_sheet_label]] <- current_results
+      
       updateSelectInput(session, "stored_sheet", choices = names(stored_results), selected = new_sheet_label)
       updateTextInput(session, "new_sheet_name", value = "")
       
-    } else {
+      log_msg(paste("Processing SUCCESS! Saved as:", new_sheet_label), "SUCCESS")
+      
+      showModal(modalDialog(
+        title = "Processing Complete",
+        "Calculations finished successfully!",
+        easyClose = T, 
+        footer = modalButton("Dismiss")
+      ))
+      
+    }, error = function(e) {
+      #Error Handling (No crash)
       processed_data(FALSE)
-    }
+      
+      #Generic message for user
+      msg_generico <- "Error in format, check your files"
+      showNotification(msg_generico, type = "error")
+      
+      # Detailed message for log
+      log_msg(paste("Processing FAILED:", e$message), "ERROR")
+    })
   })
-  
 
-  #Enable buttons post-calculations
-  observe({
-    if (processed_data()) {
-      shinyjs::enable("download_data")
-      shinyjs::enable("download_plots")
-      shinyjs::enable("download_lag_plots")
-      shinyjs::enable("download_max_percap_plot")
-      shinyjs::enable("download_performance_plot")
-    } else {
-      shinyjs::disable("download_data")
-      shinyjs::disable("download_plots")
-      shinyjs::disable("download_lag_plots")
-      shinyjs::disable("download_max_percap_plot")
-      shinyjs::disable("download_performance_plot")
-    }
-  })
-  
-  #Reactive to generate the kinectic parameters tables
-  parameter_tables <- reactive({
-    req(stored_results, input$metadata_block_names)
-    
-    lag_table <- NULL
-    AUC_table <- NULL
-    odmax_table <- NULL
-    max_percap_table <- NULL
-    
-    species_col_name <- input$metadata_block_names
-    
-    for (sheet_name in names(stored_results)) {
-      data <- stored_results[[sheet_name]]$data
-      if (!is.null(data) && nrow(data) > 0) {
-        
-        
-        if (!(species_col_name %in% names(data))) {
-          warning(paste("Column", species_col_name, "not found in stored data for sheet", sheet_name, ". Skipping this sheet for heatmap averaging."))
-          next 
-        }
-        
-        lag_temp <- data %>% select(Well, !!sym(species_col_name), lag_time) %>%
-          rename(value = lag_time)
-        colnames(lag_temp)[3] <- sheet_name
-        
-        AUC_temp <- data %>% select(Well, !!sym(species_col_name), AUC) %>%
-          rename(value = AUC)
-        colnames(AUC_temp)[3] <- sheet_name
-        
-        odmax_temp <- data %>% select(Well, !!sym(species_col_name), ODmax) %>%
-          rename(value = ODmax)
-        colnames(odmax_temp)[3] <- sheet_name
-        
-        max_percap_temp <- data %>% select(Well, !!sym(species_col_name), µmax) %>%
-          rename(value = µmax)
-        colnames(max_percap_temp)[3] <- sheet_name
-        
-        if (is.null(lag_table)) {
-          lag_table <- lag_temp
-          AUC_table <- AUC_temp
-          odmax_table <- odmax_temp
-          max_percap_table <- max_percap_temp
-        } else {
-          
-          lag_table <- merge(lag_table, lag_temp, by = c("Well", species_col_name), all = TRUE)
-          AUC_table <- merge(AUC_table, AUC_temp, by = c("Well", species_col_name), all = TRUE)
-          odmax_table <- merge(odmax_table, odmax_temp, by = c("Well", species_col_name), all = TRUE)
-          max_percap_table <- merge(max_percap_table, max_percap_temp, by = c("Well", species_col_name), all = TRUE)
-        }
-      }
-    }
-
-    return(list(lag = lag_table, AUC = AUC_table, odmax = odmax_table, max_percap = max_percap_table))
-  })
-  
-  #Function to calculate the average of each parameter
-  average_by_species <- function(data, species_col) {
-    req(data, species_col %in% names(data), nrow(data) > 0)
-    
-    averaged_data <- data %>%
-      group_by(!!sym(species_col)) %>% 
-      summarize(across(where(is.numeric), mean, na.rm = TRUE), .groups = "drop") %>%
-      ungroup() 
-
-    
-    if (nrow(averaged_data) > 0 && species_col %in% names(averaged_data)) {
-     
-      averaged_data_df <- as.data.frame(averaged_data)
-      
-      
-      rownames(averaged_data_df) <- averaged_data_df[[species_col]]
-      
-      
-      averaged_data_df <- averaged_data_df %>% select(-!!sym(species_col)) 
-      
-
-      averaged_data <- averaged_data_df
-      
-    } else {
-      print(paste("Warning: Column", species_col, "not found in averaged_data or averaged_data is empty."))
-    }
-    
- 
-    result_matrix <- as.matrix(averaged_data)
-   
-    return(result_matrix)
-  }
-  
-  
-  averaged_parameters_by_species <- reactive({
-    req(parameter_tables(), input$metadata_block_names, experimental_design())
-    
-    species_col <- input$metadata_block_names
-    return(list(
-      lag = average_by_species(parameter_tables()$lag, species_col),
-      AUC = average_by_species(parameter_tables()$AUC, species_col),
-      odmax = average_by_species(parameter_tables()$odmax, species_col),
-      max_percap = average_by_species(parameter_tables()$max_percap, species_col)
-    ))
-  })
-  
-  
-  #Function to render heatmap
-  draw_heatmap_logic <- function(data, parameter_name, species_label) {
-    
-    if (!is.null(data) && ncol(data) > 0) {
-      heatmap(data,
-              main = paste("Heatmap of Average", parameter_name, "by Species"),
-              xlab = "Processed Sheets",
-              ylab = species_label,
-              col = viridis::viridis(256),
-              margins = c(10, 10)
-      )
-    } else {
-      plot.new()
-      text(0.5, 0.5, "No Data Available for this parameter")
-    }
-  }
-  
-  #Render heatmaps
-  output$lag_heatmap_species <- renderPlot({
-    data <- averaged_parameters_by_species()$lag
-    req(data)
-    draw_heatmap_logic(scale(data), "Lag Time (Z-score)", input$metadata_block_names)
-  })
-  
-  output$AUC_heatmap_species <- renderPlot({
-    data <- averaged_parameters_by_species()$AUC
-    req(data)
-    draw_heatmap_logic(scale(data), "AUC (Z-score)", input$metadata_block_names)
-  })
-  
-  output$odmax_heatmap_species <- renderPlot({
-    data <- averaged_parameters_by_species()$odmax
-    req(data)
-    draw_heatmap_logic(scale(data), "ODmax (Z-score)", input$metadata_block_names)
-  })
-  
-  output$max_percap_heatmap_species <- renderPlot({
-    data <- averaged_parameters_by_species()$max_percap
-    req(data)
-    draw_heatmap_logic(scale(data), "µmax (Z-score)", input$metadata_block_names)
-  })
-  
   #Show original data
-  output$growth_curve <- renderPlot({
-    req(growth_curve())
-    growth_curve()
+  output$stored_results_data <- renderTable({
+    req(input$stored_sheet, stored_results[[input$stored_sheet]]$data)
+    head(stored_results[[input$stored_sheet]]$data)
   })
   
-  output$lag_time_plot <- renderPlot({
-    req(lag_time_plot())
-    lag_time_plot()
+  output$stored_results_growth_curve <- renderPlot({
+    req(input$stored_sheet, stored_results[[input$stored_sheet]]$growth_curve)
+    stored_results[[input$stored_sheet]]$growth_curve
   })
   
-  output$max_percap_plot <- renderPlot({
-    req(max_percap_plot())
-    max_percap_plot()
-  })
-
-  output$ODmax_plot <- renderPlot({
-    req(ODmax_plot())
-    ODmax_plot()
+  output$stored_results_lag_plot <- renderPlot({
+    req(input$stored_sheet, stored_results[[input$stored_sheet]]$lag_plot)
+    stored_results[[input$stored_sheet]]$lag_plot
   })
   
-#####DOWNLOAD HANDLERS#####
+  output$stored_results_max_percap_plot <- renderPlot({
+    req(input$stored_sheet, stored_results[[input$stored_sheet]]$max_percap_plot)
+    stored_results[[input$stored_sheet]]$max_percap_plot
+  })
+  
+  output$stored_results_ODmax_plot <- renderPlot({
+    req(input$stored_sheet, stored_results[[input$stored_sheet]]$ODmax_plot)
+    stored_results[[input$stored_sheet]]$ODmax_plot
+  })
+  
+  #####DOWNLOAD HANDLERS#####
   output$download_data <- downloadHandler(
     filename = function() {
       paste("Kinetic_parameters_", input$metadata_block_names, "_", input$stored_sheet, ".xlsx", sep = "")
@@ -664,7 +585,7 @@ server <- function(input, output, session) {
       ggsave(file, plot = stored_results[[input$stored_sheet]]$growth_curve, device = "pdf", width = 15, height = 10)
     }
   )
-
+  
   output$download_lag_plots <- downloadHandler(
     filename = function() {
       paste("lag_plots_", input$metadata_block_names, "_", input$stored_sheet, ".pdf", sep = "")
@@ -674,7 +595,7 @@ server <- function(input, output, session) {
       ggsave(file, plot = stored_results[[input$stored_sheet]]$lag_plot, device = "pdf", width = 15, height = 10)
     }
   )
-
+  
   output$download_max_percap_plot <- downloadHandler(
     filename = function() {
       paste("max_percap_plots_", input$metadata_block_names, "_", input$stored_sheet, ".pdf", sep = "")
@@ -684,7 +605,7 @@ server <- function(input, output, session) {
       ggsave(file, plot = stored_results[[input$stored_sheet]]$max_percap_plot, device = "pdf", width = 15, height = 10)
     }
   )
-
+  
   output$download_performance_plot <- downloadHandler(
     filename = function() {
       paste("Performance_plots_", input$metadata_block_names, "_", input$stored_sheet, ".pdf", sep = "")
@@ -695,40 +616,6 @@ server <- function(input, output, session) {
     }
   )  
   
-  output$download_all_heatmaps <- downloadHandler(
-    filename = function() {
-      paste("All_Heatmaps_", input$metadata_block_names, "_", Sys.Date(), ".pdf", sep = "")
-    },
-    content = function(file) {
-      req(averaged_parameters_by_species())
-      data_list <- averaged_parameters_by_species()
-      species_label <- input$metadata_block_names
-      
-      pdf(file, width = 10, height = 10) 
-
-      #Page 1: Lag_time
-      if(!is.null(data_list$lag)) {
-        draw_heatmap_logic(scale(data_list$lag), "Lag Time (Z-score)", species_label)
-      }
-      
-      #Page 2: AUC
-      if(!is.null(data_list$AUC)) {
-        draw_heatmap_logic(scale(data_list$AUC), "AUC (Z-score)", species_label)
-      }
-      
-      #Page 3: ODmax
-      if(!is.null(data_list$odmax)) {
-        draw_heatmap_logic(scale(data_list$odmax), "ODmax (Z-score)", species_label)
-      }
-      
-      # Page 4: µmax
-      if(!is.null(data_list$max_percap)) {
-        draw_heatmap_logic(scale(data_list$max_percap), "µmax (Z-score)", species_label)
-      }
-      
-      dev.off()
-    }
-  )
   
   output$stored_results_table <- renderTable({
     req(input$stored_sheet)
