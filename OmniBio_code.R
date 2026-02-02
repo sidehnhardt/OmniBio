@@ -85,6 +85,8 @@ ui <- fluidPage(
       downloadButton("download_lag_plots", "Download your lag phase plots", class = "btn-sm"),
       downloadButton("download_max_percap_plot", "Download your µmax plots", class = "btn-sm"),
       downloadButton("download_performance_plot", "Download your Performance plots", class = "btn-sm"),
+      downloadButton("download_all_heatmaps", "Download All Heatmaps", class = "btn-sm"),
+      
     
     hr(),
     h4("Activity Log"),
@@ -157,6 +159,12 @@ ui <- fluidPage(
                             Here its shown the plots, where the red dot shows the point of saturation of cells in the culture media."), 
                             plotOutput("stored_results_ODmax_plot"))
                  )
+        ),
+        tabPanel("Heatmaps by Plates",
+                 plotOutput("lag_heatmap_species"),
+                 plotOutput("AUC_heatmap_species"),
+                 plotOutput("odmax_heatmap_species"),
+                 plotOutput("max_percap_heatmap_species")
         )
       )
     )
@@ -184,18 +192,20 @@ server <- function(input, output, session) {
   
   #Disable download buttons
   observe({
-    if (!is.null(input$excel_file) && !is.null(input$metadata_file) && processed_data()) {
+    if (processed_data()) {
       shinyjs::enable("download_data")
       shinyjs::enable("download_plots")
       shinyjs::enable("download_lag_plots")
       shinyjs::enable("download_max_percap_plot")
       shinyjs::enable("download_performance_plot")
+      shinyjs::enable("download_all_heatmaps")
     } else {
       shinyjs::disable("download_data")
       shinyjs::disable("download_plots")
       shinyjs::disable("download_lag_plots")
       shinyjs::disable("download_max_percap_plot")
       shinyjs::disable("download_performance_plot")
+      shinyjs::disable("download_all_heatmaps")
     }
   })
   
@@ -298,6 +308,11 @@ server <- function(input, output, session) {
       geom_line() +
       facet_wrap(~Well, nrow = 8, ncol = 12) +
       labs(title = "Growth curves for each well")
+  })
+  
+  output$growth_curve <- renderPlot({
+    req(growth_curve())
+    growth_curve()
   })
   
   #Kinectic derivatives calculations 
@@ -509,7 +524,8 @@ server <- function(input, output, session) {
         growth_curve = growth_curve(),
         lag_plot = lag_time_plot(),
         max_percap_plot = max_percap_plot(),
-        ODmax_plot = ODmax_plot()
+        ODmax_plot = ODmax_plot(),
+        meta_name = input$metadata_block_names
       )
       
       stored_results[[new_sheet_label]] <- current_results
@@ -537,6 +553,160 @@ server <- function(input, output, session) {
       # Detailed message for log
       log_msg(paste("Processing FAILED:", e$message), "ERROR")
     })
+  })
+
+  
+  #Heatmaps
+  #Reactive to generate the kinetic parameters tables with a Common ID
+  parameter_tables <- reactive({
+    req(stored_results) 
+    
+    lag_table <- NULL
+    AUC_table <- NULL
+    odmax_table <- NULL
+    max_percap_table <- NULL
+    
+    common_id <- "Common_ID"
+    
+    for (sheet_name in names(stored_results)) {
+      dataset_list <- stored_results[[sheet_name]]
+      data <- dataset_list$data
+      
+      original_col_name <- if(!is.null(dataset_list$meta_name)) dataset_list$meta_name else input$metadata_block_names
+      
+      if (!is.null(data) && nrow(data) > 0) {
+        
+        if (!(original_col_name %in% names(data))) {
+          log_msg(paste("Warning for Heatmap: Column", original_col_name, "not found in sheet", sheet_name), "WARNING")
+          next 
+        }
+        
+        #Rename to common ID
+        data <- data %>% rename(!!sym(common_id) := !!sym(original_col_name))
+        
+        lag_temp <- data %>% select(Well, !!sym(common_id), lag_time) %>%
+          rename(value = lag_time)
+        colnames(lag_temp)[3] <- sheet_name
+        
+        AUC_temp <- data %>% select(Well, !!sym(common_id), AUC) %>%
+          rename(value = AUC)
+        colnames(AUC_temp)[3] <- sheet_name
+        
+        odmax_temp <- data %>% select(Well, !!sym(common_id), ODmax) %>%
+          rename(value = ODmax)
+        colnames(odmax_temp)[3] <- sheet_name
+        
+        max_percap_temp <- data %>% select(Well, !!sym(common_id), µmax) %>%
+          rename(value = µmax)
+        colnames(max_percap_temp)[3] <- sheet_name
+        
+        if (is.null(lag_table)) {
+          lag_table <- lag_temp
+          AUC_table <- AUC_temp
+          odmax_table <- odmax_temp
+          max_percap_table <- max_percap_temp
+        } else {
+          lag_table <- merge(lag_table, lag_temp, by = c("Well", common_id), all = TRUE)
+          AUC_table <- merge(AUC_table, AUC_temp, by = c("Well", common_id), all = TRUE)
+          odmax_table <- merge(odmax_table, odmax_temp, by = c("Well", common_id), all = TRUE)
+          max_percap_table <- merge(max_percap_table, max_percap_temp, by = c("Well", common_id), all = TRUE)
+        }
+      }
+    }
+    
+    return(list(lag = lag_table, AUC = AUC_table, odmax = odmax_table, max_percap = max_percap_table))
+  })
+  
+  #Function to calculate the average using the Common ID
+  average_by_species <- function(data, species_col) {
+    req(data, species_col %in% names(data), nrow(data) > 0)
+    
+    averaged_data <- data %>%
+      group_by(!!sym(species_col)) %>% 
+      summarize(across(where(is.numeric), mean, na.rm = TRUE), .groups = "drop") %>%
+      ungroup() 
+    
+    if (nrow(averaged_data) > 0 && species_col %in% names(averaged_data)) {
+      averaged_data_df <- as.data.frame(averaged_data)
+      rownames(averaged_data_df) <- averaged_data_df[[species_col]]
+      averaged_data_df <- averaged_data_df %>% select(-!!sym(species_col)) 
+      averaged_data <- averaged_data_df
+    }
+    
+    result_matrix <- as.matrix(averaged_data)
+    return(result_matrix)
+  }
+  
+  #Reactive for averaged parameters
+  averaged_parameters_by_species <- reactive({
+    req(parameter_tables())
+    
+    species_col_internal <- "Common_ID"
+    
+    return(list(
+      lag = average_by_species(parameter_tables()$lag, species_col_internal),
+      AUC = average_by_species(parameter_tables()$AUC, species_col_internal),
+      odmax = average_by_species(parameter_tables()$odmax, species_col_internal),
+      max_percap = average_by_species(parameter_tables()$max_percap, species_col_internal)
+    ))
+  })
+  
+  #Function to plot Heatmaps with safety check
+  draw_heatmap_logic <- function(data, parameter_name, species_label) {
+    
+    #Is there any data?
+    if (is.null(data) || nrow(data) == 0 || ncol(data) == 0) {
+      plot.new()
+      text(0.5, 0.5, "No Data Available", cex = 1.2)
+      return()
+    }
+    
+    #Multiple sheets validation (2 or more)
+    if (ncol(data) < 2) {
+      plot.new()
+      text(0.5, 0.5, "Insufficient Data for Heatmap\n\nYou need to process at least 2 sheets/files\nto compare them.", cex = 1.2, col = "darkgray")
+      return()
+    }
+    
+    #Ploting
+    tryCatch({
+      heatmap(data,
+              main = paste("Heatmap of Average", parameter_name, "by Plate"),
+              xlab = "Processed Sheets",
+              ylab = species_label,
+              col = viridis::viridis(256),
+              margins = c(10, 10)
+      )
+    }, error = function(e) {
+      #If heatmap fails
+      plot.new()
+      text(0.5, 0.5, paste("Error generating Heatmap:\n", e$message), col = "red")
+    })
+  }
+  
+  #Render heatmaps
+  output$lag_heatmap_species <- renderPlot({
+    data <- averaged_parameters_by_species()$lag
+    req(data)
+    draw_heatmap_logic(scale(data), "Lag Time (Z-score)", input$metadata_block_names)
+  })
+  
+  output$AUC_heatmap_species <- renderPlot({
+    data <- averaged_parameters_by_species()$AUC
+    req(data)
+    draw_heatmap_logic(scale(data), "AUC (Z-score)", input$metadata_block_names)
+  })
+  
+  output$odmax_heatmap_species <- renderPlot({
+    data <- averaged_parameters_by_species()$odmax
+    req(data)
+    draw_heatmap_logic(scale(data), "ODmax (Z-score)", input$metadata_block_names)
+  })
+  
+  output$max_percap_heatmap_species <- renderPlot({
+    data <- averaged_parameters_by_species()$max_percap
+    req(data)
+    draw_heatmap_logic(scale(data), "µmax (Z-score)", input$metadata_block_names)
   })
 
   #Show original data
@@ -616,37 +786,40 @@ server <- function(input, output, session) {
     }
   )  
   
-  
-  output$stored_results_table <- renderTable({
-    req(input$stored_sheet)
-    head(stored_results[[input$stored_sheet]])
-  }
+  output$download_all_heatmaps <- downloadHandler(
+    filename = function() {
+      paste("All_Heatmaps_", input$metadata_block_names, "_", Sys.Date(), ".pdf", sep = "")
+    },
+    content = function(file) {
+      req(averaged_parameters_by_species())
+      data_list <- averaged_parameters_by_species()
+      species_label <- input$metadata_block_names
+      
+      pdf(file, width = 10, height = 10) 
+      
+      #Page 1: Lag_time
+      if(!is.null(data_list$lag)) {
+        draw_heatmap_logic(scale(data_list$lag), "Lag Time (Z-score)", species_label)
+      }
+      
+      #Page 2: AUC
+      if(!is.null(data_list$AUC)) {
+        draw_heatmap_logic(scale(data_list$AUC), "AUC (Z-score)", species_label)
+      }
+      
+      #Page 3: ODmax
+      if(!is.null(data_list$odmax)) {
+        draw_heatmap_logic(scale(data_list$odmax), "ODmax (Z-score)", species_label)
+      }
+      
+      # Page 4: µmax
+      if(!is.null(data_list$max_percap)) {
+        draw_heatmap_logic(scale(data_list$max_percap), "µmax (Z-score)", species_label)
+      }
+      
+      dev.off()
+    }
   )
-  
-  output$stored_results_data <- renderTable({
-    req(input$stored_sheet, stored_results[[input$stored_sheet]]$data)
-    head(stored_results[[input$stored_sheet]]$data)
-  })
-  
-  output$stored_results_growth_curve <- renderPlot({
-    req(input$stored_sheet, stored_results[[input$stored_sheet]]$growth_curve)
-    stored_results[[input$stored_sheet]]$growth_curve
-  })
-  
-  output$stored_results_lag_plot <- renderPlot({
-    req(input$stored_sheet, stored_results[[input$stored_sheet]]$lag_plot)
-    stored_results[[input$stored_sheet]]$lag_plot
-  })
-  
-  output$stored_results_max_percap_plot <- renderPlot({
-    req(input$stored_sheet, stored_results[[input$stored_sheet]]$max_percap_plot)
-    stored_results[[input$stored_sheet]]$max_percap_plot
-  })
-  
-  output$stored_results_ODmax_plot <- renderPlot({
-    req(input$stored_sheet, stored_results[[input$stored_sheet]]$ODmax_plot)
-    stored_results[[input$stored_sheet]]$ODmax_plot
-  })
 }
 
 #Run the app
